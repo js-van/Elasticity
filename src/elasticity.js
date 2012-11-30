@@ -1,3 +1,4 @@
+"use strict";
 var numeric = require('numeric');
 
 function factorial(n) {
@@ -18,6 +19,8 @@ function ElasticBody(args) {
   var VERTEX_COUNT        = rest_position.length;
   var ELEMENT_COUNT       = mesh.length;
   var MAX_ITER            = args.max_iterations || 5;
+  var DEFAULT_DELTA_T     = args.delta_t || 1.0;
+  var VELOCITY_DAMPING    = args.damping || 0.0;
   
   //Callbacks
   var stress_function     = args.stress_function;
@@ -63,10 +66,20 @@ function ElasticBody(args) {
       }
       shape_inverse[i] = numeric.inv(Dm);
       shape_measure[i] = numeric.det(Dm) / factorial(DIMENSION);
+      
+      for(var j=0; j<=DIMENSION; ++j) {
+        lumped_masses[simplex[j]] += shape_measure[i];
+      }
     }
     
-    //TODO: Precalculate lumped mass matrix
-    
+    //Calculate lumped mass matrix
+    for(var i=0; i<VERTEX_COUNT; ++i) {
+      if(Math.abs(lumped_masses[i]) > EPSILON) {
+        lumped_masses[i] = 1.0 / lumped_masses[i];
+      } else {
+        lumped_masses[i] = 0.0;
+      }
+    }
   })();
   
   
@@ -100,12 +113,12 @@ function ElasticBody(args) {
 
   
   //Compute stress
+  var Ds = numeric.rep([DIMENSION, DIMENSION], 0.0);
+  var F  = numeric.rep([DIMENSION, DIMENSION], 0.0);
+  var P  = numeric.rep([DIMENSION, DIMENSION], 0.0);
+  var H  = numeric.rep([DIMENSION, DIMENSION], 0.0);
+  
   function compute_stresses(t, active_position) {
-    var Ds = numeric.rep([DIMENSION, DIMENSION], 0.0);
-    var F  = numeric.rep([DIMENSION, DIMENSION], 0.0);
-    var P  = numeric.rep([DIMENSION, DIMENSION], 0.0);
-    var H  = numeric.rep([DIMENSION, DIMENSION], 0.0);
-
     for(var i=0; i<ELEMENT_COUNT; ++i) {
       var simplex = mesh[i];
       var inv_shape = shape_inverse[i];
@@ -149,11 +162,7 @@ function ElasticBody(args) {
       var m  = lumped_masses[i];
       
       for(var j=0; j<DIMENSION; ++j) {
-        v1[j] = v0[j];
-        var m_r = m[j];
-        for(var k=0; k<DIMENSION; ++k) {
-          v1[j] += m_r[k] * f[k] * delta_t;
-        }
+        v1[j] = v0[j] + m[j] * f[j] * delta_t;
       }
     }
   }
@@ -212,6 +221,12 @@ function ElasticBody(args) {
 
   //Advances simulation by t
   function step(step_t) {
+  
+    //Set default step size if not specified
+    if(!step_t) {
+      step_t = DEFAULT_DELTA_T;
+    }
+  
     while(step_t > EPSILON) {
       //Compute minimum time step
       var delta_t = 0.01;
@@ -241,6 +256,13 @@ function ElasticBody(args) {
   Object.defineProperty(result, "velocity", {
     get: function() { return velocity_buf[cur_buf]; }
   });
+  Object.defineProperty(result, "forces", {
+    get: function() { return forces; }
+  });
+  Object.defineProperty(result, "mesh", {
+    get: function() { return mesh; }
+  });
+  
   
   return body;
 }
