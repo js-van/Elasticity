@@ -1,5 +1,6 @@
 "use strict";
 var numeric = require('numeric');
+var EPSILON = 1e-6;
 
 function factorial(n) {
   var s = 1;
@@ -9,8 +10,87 @@ function factorial(n) {
   return s;
 }
 
+//The constraint container class
+function Constraint(position_func, jacobian_func) {
+  this.active         = true;
+  this.position_func  = position_func;
+  this.jacobian_func  = jacobian_func;
+}
+
+//Only valid for small deformations
+exports.LinearMaterial = function(mu, lambda, DIMENSION) {
+  var stress_func = [];
+  
+  var init_term = "var tr=" + lambda + "*(";
+  for(var i=0; i<DIMENSION; ++i) {
+    init_term += "D["+i + "][" + i + "]";
+  }
+  init_term += ");";
+  stress_func.push(init_term);
+  
+  for(var i=0; i<DIMENSION; ++i) {
+    for(var j=0; j<DIMENSION; ++j) {
+      var term = "R[" + i + "][" + j + "]=";
+      if(i === j) {
+        term += tr + "+" + (2.0*mu) + "*(D["+i+"]["+j+"]-1)";
+      } else {
+        term += mu + "*(D["+i+"]["+j+"]" + "D["+j+"]["+i+"])"
+      }
+      term += ";";
+      stress_func.push(term);
+    }
+  }
+
+  return new Function("R", "D", stress_func.join("\n"));
+}
+
+
+exports.KirchoffMaterial = function(mu, lambda, DIMENSION) {
+
+  var stress_func = [];
+  
+  var init_term = "var tr=" + lambda + "*(";
+  for(var i=0; i<DIMENSION; ++i) {
+    if(i > 0) {
+      init_term += "+";
+    }
+    init_term += "D["+i + "][" + i + "]";
+  }
+  init_term += ");";
+  stress_func.push(init_term);
+  
+  for(var i=0; i<DIMENSION; ++i) {
+    for(var j=0; j<DIMENSION; ++j) {
+      var term = "var sigma" + i + "" + j + "=";
+      if(i === j) {
+        term += "tr+" + (2.0*mu) + "*(D["+i+"]["+j+"]-1)";
+      } else {
+        term += mu + "*(D["+i+"]["+j+"]+D["+j+"]["+i+"])"
+      }
+      term += ";";
+      stress_func.push(term);
+    }
+  }
+  
+  for(var i=0; i<DIMENSION; ++i) {
+    for(var j=0; j<DIMENSION; ++j) {
+      var term = "R["+i+"]["+j+"]=";
+      for(var k=0; k<DIMENSION; ++k) {
+        if(k > 0) {
+          term += "+";
+        }
+        term += "D["+i+"]["+k+"]*sigma"+k+""+j;
+      }
+      stress_func.push(term);
+    }
+  }
+  
+  return new Function("R", "D", stress_func.join("\n"));
+}
+
 //Creates a model for a nonlinear elastic body with large deformations
-function ElasticBody(args) {
+exports.ElasticBody = function(args) {
+  "use strict";
 
   //Constants and other fixed parameters
   var rest_position       = args.rest_position;
@@ -19,34 +99,37 @@ function ElasticBody(args) {
   var VERTEX_COUNT        = rest_position.length;
   var ELEMENT_COUNT       = mesh.length;
   var MAX_ITER            = args.max_iterations || 5;
-  var DEFAULT_DELTA_T     = args.delta_t || 1.0;
+  var MAX_DELTA_T         = args.delta_t || 1.0;
   var VELOCITY_DAMPING    = args.damping || 0.0;
+  var DENSITY             = args.density || 1.0;
   
   //Callbacks
   var stress_function     = args.stress_function;
-  var body_forces         = args.force_function || new Function("");
-  var position_constraint = args.position_constraint || new Function("");
-  var velocity_constraint = args.velocity_constraint || new Function("");
 
   //Precalculated stuff
-  var lumped_masses     = numeric.rep([VERTEX_COUNT,DIMENSION], 0.0);
-  var shape_matrix      = numeric.rep([ELEMENT_COUNT,DIMENSION,DIMENSION], 0.0);
-  var shape_measure     = numeric.rep([ELEMENT_COUNT], 0.0);
-  var shape_inverse     = new Array(ELEMENT_COUNT);
+  var total_mass          = 0.0;
+  var lumped_masses       = numeric.rep([VERTEX_COUNT], 0.0);
+  var lumped_masses_inv   = numeric.rep([VERTEX_COUNT], 0.0);
+  var shape_matrix        = numeric.rep([ELEMENT_COUNT,DIMENSION,DIMENSION], 0.0);
+  var shape_measure       = numeric.rep([ELEMENT_COUNT], 0.0);
+  var shape_inverse       = new Array(ELEMENT_COUNT);
   
   //State variables
-  var cur_buf           = 0;
-  var position_buf      = numeric.rep([2,VERTEX_COUNT,DIMENSION], 0.0);
-  var velocity_buf      = numeric.rep([2,VERTEX_COUNT,DIMENSION], 0.0);
-  var force             = numeric.rep([VERTEX_COUNT,DIMENSION], 0.0);
-  var time              = 0.0;
+  var cur_buf             = 0;
+  var position_buf        = numeric.rep([2,VERTEX_COUNT,DIMENSION], 0.0);
+  var velocity_buf        = numeric.rep([2,VERTEX_COUNT,DIMENSION], 0.0);
+  var force               = numeric.rep([VERTEX_COUNT,DIMENSION], 0.0);
+  var time                = 0.0;
+  
+  //Final data structure
+  var result;
 
   //Initialization
   (function() {
   
     //Initialize state vectors
     var initial = (args.initial_position || rest_position);
-    for(var i=0; i<vertex_count; ++i) {
+    for(var i=0; i<VERTEX_COUNT; ++i) {
       for(var j=0; j<DIMENSION; ++j) {
         position_buf[1][i][j] = position_buf[0][i][j] = initial[i][j];
       }
@@ -56,28 +139,30 @@ function ElasticBody(args) {
     for(var i=0; i<ELEMENT_COUNT; ++i) {
       var simplex = mesh[i];
       var Dm = shape_matrix[i];
-      var v0 = rest_position[simplex[i]];
+      var v0 = rest_position[simplex[0]];
       for(var j=0; j<DIMENSION; ++j) {
         var Dmj = Dm[j];
-        var v1  = rest_position[simplex[j]+1];
+        var v1  = rest_position[simplex[j+1]];
         for(var k=0; k<DIMENSION; ++k) {
           Dmj[k] = v1[k] - v0[k];
         }
       }
       shape_inverse[i] = numeric.inv(Dm);
-      shape_measure[i] = numeric.det(Dm) / factorial(DIMENSION);
-      
+      shape_measure[i] = Math.abs(numeric.det(Dm) / factorial(DIMENSION));
+      total_mass      += shape_measure[i];
+   
       for(var j=0; j<=DIMENSION; ++j) {
         lumped_masses[simplex[j]] += shape_measure[i];
       }
     }
     
-    //Calculate lumped mass matrix
+    //Calculate inverse lumped masses
     for(var i=0; i<VERTEX_COUNT; ++i) {
-      if(Math.abs(lumped_masses[i]) > EPSILON) {
-        lumped_masses[i] = 1.0 / lumped_masses[i];
+      lumped_masses[i] *= DENSITY;
+      if(lumped_masses[i] > EPSILON) {
+        lumped_masses_inv[i] = 1.0 / lumped_masses[i];
       } else {
-        lumped_masses[i] = 0.0;
+        lumped_masses_inv[i] = 0.0;
       }
     }
   })();
@@ -91,7 +176,7 @@ function ElasticBody(args) {
         "s=0.0;",
         "for(var k=0; k<"+DIMENSION+";++k) {",
           "s+=row[k]*b[k][j];",
-        "}
+        "}",
         "c[i][j] = s;",
       "}",
     "}"
@@ -105,12 +190,20 @@ function ElasticBody(args) {
         "col = b[j]",
         "for(var k=0; k<"+DIMENSION+";++k) {",
           "s+=row[k]*col[k];",
-        "}
+        "}",
         "c[i][j] = s;",
       "}",
     "}"
   ].join("\n"));
 
+
+  //Apply constraints to problem
+  function apply_constraints(t, position, velocity) {
+    var constraints = result.constraints;
+    
+    //TODO: Solve for constraint forces
+  
+  }
   
   //Compute stress
   var Ds = numeric.rep([DIMENSION, DIMENSION], 0.0);
@@ -118,7 +211,7 @@ function ElasticBody(args) {
   var P  = numeric.rep([DIMENSION, DIMENSION], 0.0);
   var H  = numeric.rep([DIMENSION, DIMENSION], 0.0);
   
-  function compute_stresses(t, active_position) {
+  function compute_stresses(active_position) {
     for(var i=0; i<ELEMENT_COUNT; ++i) {
       var simplex = mesh[i];
       var inv_shape = shape_inverse[i];
@@ -156,13 +249,13 @@ function ElasticBody(args) {
   function integrate_velocity(n_velocity, o_velocity, delta_t) {
    
     for(var i=0; i<VERTEX_COUNT; ++i) {
-      var v0 = o_position[i];
-      var v1 = n_position[i];
+      var v0 = o_velocity[i];
+      var v1 = n_velocity[i];
       var f  = force[i];
-      var m  = lumped_masses[i];
+      var m  = lumped_masses_inv[i] * delta_t;
       
       for(var j=0; j<DIMENSION; ++j) {
-        v1[j] = v0[j] + m[j] * f[j] * delta_t;
+        v1[j] = v0[j] +  f[j] * m;
       }
     }
   }
@@ -173,7 +266,7 @@ function ElasticBody(args) {
     velocity,
     delta_t) {
     
-    for(var i=0; i<n_positions.length; ++i) {
+    for(var i=0; i<VERTEX_COUNT; ++i) {
       var u0 = o_position[i];
       var u1 = n_position[i];
       var v  = velocity[i];
@@ -192,7 +285,11 @@ function ElasticBody(args) {
     
     //Compute initial estimate for position
     integrate_position(n_position, o_position, o_velocity, delta_t);
-    position_constraint(time+delta_t, n_position);
+    
+    var body_force = new Array(DIMENSION);
+    for(var i=0; i<DIMENSION; ++i) {
+      body_force[i] = result.body_force[i] / total_mass;
+    }
     
     //Iterate a few times to get convergence
     for(var iter=0; iter<MAX_ITER; ++iter) {
@@ -200,18 +297,18 @@ function ElasticBody(args) {
       //Compute forces
       for(var i=0; i<VERTEX_COUNT; ++i) {
         var f = force[i];
+        var m = lumped_masses[i];
         for(var j=0; j<DIMENSION; ++j) {
-          f[j] = 0.0;
+          f[j] = body_force[j] * m;
         }
       }
-      body_forces(time+delta_t, n_position, force);
       compute_stresses(n_position);
+      
       
       //Integrate and apply constraints
       integrate_velocity(n_velocity, o_velocity, delta_t);
-      velocity_constraint(time+delta_t, n_position, n_velocity);
+      apply_constraints(time+delta_t, n_position, n_velocity);
       integrate_position(n_position, o_position, n_velocity, delta_t);
-      position_constraint(time+delta_t, n_position);
     }
     
     //Advance time
@@ -224,12 +321,12 @@ function ElasticBody(args) {
   
     //Set default step size if not specified
     if(!step_t) {
-      step_t = DEFAULT_DELTA_T;
+      step_t = MAX_DELTA_T;
     }
   
     while(step_t > EPSILON) {
       //Compute minimum time step
-      var delta_t = 0.01;
+      var delta_t = MAX_DELTA_T;
       delta_t = Math.min(delta_t, step_t);
       
       //Compute next buffer
@@ -247,8 +344,14 @@ function ElasticBody(args) {
   }
   
   //Create final body
-  var result = {
-    step: step
+  result = {
+    step:           step,
+    mass:           total_mass,
+    body_force:     args.body_force || [0,0,0],
+    constraints:    args.constraints || [],
+    VERTEX_COUNT:   VERTEX_COUNT,
+    ELEMENT_COUNT:  ELEMENT_COUNT,
+    DIMENSION:      DIMENSION
   };
   Object.defineProperty(result, "position", {
     get: function() { return position_buf[cur_buf]; }
@@ -256,13 +359,16 @@ function ElasticBody(args) {
   Object.defineProperty(result, "velocity", {
     get: function() { return velocity_buf[cur_buf]; }
   });
-  Object.defineProperty(result, "forces", {
-    get: function() { return forces; }
+  Object.defineProperty(result, "force", {
+    get: function() { return force; }
   });
   Object.defineProperty(result, "mesh", {
     get: function() { return mesh; }
   });
+  Object.defineProperty(result, "time", {
+    get: function() { return time; }
+  })
   
-  
-  return body;
+  return result;
 }
+
