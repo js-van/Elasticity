@@ -1,8 +1,8 @@
 "use strict";
 var Viewer2D = require('./viewer2d.js').Viewer2D;
+var Buffer = require('buffer').Buffer;
 var viewer;
-var container = document.createElement("div");
-document.body.appendChild(container);
+var container;
 
 function removeViewer() {
   if(!viewer) {
@@ -80,25 +80,43 @@ function createViewer(RUN) {
 }
 
 
+function decodeDataURL(string) {
+  var regex = /^data:;base64,(.*)$/;
+  var matches = string.match(regex);
+  var buffer = new Buffer(matches[1], 'base64');
+  return buffer.toString();
+}
+
+
 function init() {
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  container.innerHTML = "Drag .run here to view";
+
   function cancel(e) {
     if (e.preventDefault) e.preventDefault(); // required by FF + Safari
     e.dataTransfer.dropEffect = 'copy'; // tells the browser what drop effect is allowed here
     return false; // required by IE
   }
 
+  container.style.width = "100%";
+  container.style.height = "100%";
 
   // Tells the browser that we *can* drop on this target
-  addEvent(container, 'dragover', cancel);
-  addEvent(container, 'dragenter', cancel);
-  addEvent(container, 'drop', function (e) {
-    if (e.preventDefault) e.preventDefault(); // stops the browser from redirecting off to the text.
-
-    console.log(e.dataTransfer);
-    
+  container.addEventListener('dragover', cancel, false);
+  container.addEventListener('dragenter', cancel, false);
+  container.addEventListener('drop', function (e) {
+    e.preventDefault(); // stops the browser from redirecting off to the text.
+    var file = e.dataTransfer.files[0],
+        reader = new FileReader();
+    reader.onload = function (event) {
+      var data = JSON.parse(decodeDataURL(event.target.result));
+      removeViewer();
+      createViewer(data);
+    };
+    reader.readAsDataURL(file);
     return false;
-  });
+  }, false);
 }
 
-
-init();
+window.onload = init;

@@ -23,7 +23,7 @@ function Viewer2D(canvas, run) {
   var frames      = run.trajectory;
   var cur_frame   = 0;
   var cur_time    = 0.0;
-  var destroyed   = true;
+  var destroyed   = false;
   
   result.fillStyle = '#f00';
   result.anim_speed = 0.1;
