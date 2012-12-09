@@ -17,34 +17,7 @@ function Constraint(position_func, jacobian_func) {
   this.jacobian_func  = jacobian_func;
 }
 
-//Only valid for small deformations
-exports.LinearMaterial = function(mu, lambda, DIMENSION) {
-  var stress_func = [];
-  
-  var init_term = "var tr=" + lambda + "*(";
-  for(var i=0; i<DIMENSION; ++i) {
-    init_term += "D["+i + "][" + i + "]";
-  }
-  init_term += ");";
-  stress_func.push(init_term);
-  
-  for(var i=0; i<DIMENSION; ++i) {
-    for(var j=0; j<DIMENSION; ++j) {
-      var term = "R[" + i + "][" + j + "]=";
-      if(i === j) {
-        term += tr + "+" + (2.0*mu) + "*(D["+i+"]["+j+"]-1)";
-      } else {
-        term += mu + "*(D["+i+"]["+j+"]" + "D["+j+"]["+i+"])"
-      }
-      term += ";";
-      stress_func.push(term);
-    }
-  }
-
-  return new Function("R", "D", stress_func.join("\n"));
-}
-
-
+//St.Venant-Kirchoff Model for material
 exports.KirchoffMaterial = function(mu, lambda, DIMENSION) {
 
   var stress_func = [];
@@ -202,6 +175,8 @@ exports.ElasticBody = function(args) {
     var constraints = result.constraints;
     
     //TODO: Solve for constraint forces
+    position[0][0] = position[0][1] = 0.0;
+    velocity[0][0] = velocity[0][1] = 0.0;
   
   }
   

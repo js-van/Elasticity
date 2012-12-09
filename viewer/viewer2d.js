@@ -23,6 +23,7 @@ function Viewer2D(canvas, run) {
   var frames      = run.trajectory;
   var cur_frame   = 0;
   var cur_time    = 0.0;
+  var destroyed   = true;
   
   result.fillStyle = '#f00';
   result.anim_speed = 0.1;
@@ -39,6 +40,11 @@ function Viewer2D(canvas, run) {
 
   //Draw mesh
   function draw() {
+    if(destroyed) {
+      return;
+    }
+  
+  
     context.clearRect(0, 0, canvas.width, canvas.height);
     context.save();
     context.translate(canvas.width/2, canvas.height/2);
@@ -118,6 +124,7 @@ function Viewer2D(canvas, run) {
 
   draw();
   
+  result.destroy    = function() { pause_animation(); destroyed = true; }
   result.step       = step_frame;
   result.pause      = pause_animation;
   result.play       = play_animation;
